@@ -1,0 +1,157 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: condotrack-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_DATABASE: condotrack
+      MYSQL_USER: condotrack_user
+      MYSQL_PASSWORD: Condo@2024Docker
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./migrations:/docker-entrypoint-initdb.d
+    networks:
+      - condotrack-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    command: --default-authentication-plugin=mysql_native_password
+
+  minio:
+    image: minio/minio:latest
+    container_name: condotrack-minio
+    command: server /data --console-address ":9003"
+    environment:
+      MINIO_ROOT_USER: condotrack
+      MINIO_ROOT_PASSWORD: Condo@2024Minio
+    ports:
+      - "9002:9000"
+      - "9003:9003"
+    volumes:
+      - minio_data:/data
+    networks:
+      - condotrack-network
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: condotrack-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set myminio http://minio:9000 condotrack Condo@2024Minio;
+      mc mb --ignore-existing myminio/uploads;
+      mc mb --ignore-existing myminio/portal-images;
+      mc mb --ignore-existing myminio/evidence;
+      mc mb --ignore-existing myminio/certificates;
+      mc anonymous set download myminio/uploads;
+      mc anonymous set download myminio/portal-images;
+      mc anonymous set download myminio/evidence;
+      mc anonymous set download myminio/certificates;
+      exit 0;
+      "
+    networks:
+      - condotrack-network
+
+  api:
+    build: .
+    container_name: condotrack-api
+    ports:
+      - "8000:8000"
+    environment:
+      - SERVER_PORT=8000
+      - APP_ENV=development
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_NAME=condotrack
+      - DB_USER=condotrack_user
+      - DB_PASS=Condo@2024Docker
+      - ASAAS_API_KEY=${ASAAS_API_KEY:-}
+      - ASAAS_API_URL=https://sandbox.asaas.com/api/v3
+      - ASAAS_WEBHOOK_TOKEN=${ASAAS_WEBHOOK_TOKEN:-}
+      - ASAAS_ENV=sandbox
+      - REVENUE_INSTRUCTOR_PERCENT=70
+      - REVENUE_PLATFORM_PERCENT=30
+      - UPLOAD_DIR=/app/uploads
+      - MAX_UPLOAD_SIZE=52428800
+      # MinIO Configuration
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=condotrack
+      - MINIO_SECRET_KEY=Condo@2024Minio
+      - MINIO_USE_SSL=false
+      - MINIO_PUBLIC_URL=http://localhost:9002
+      - MINIO_BUCKET_UPLOADS=uploads
+      - MINIO_BUCKET_PORTAL=portal-images
+      - MINIO_BUCKET_EVIDENCE=evidence
+      - MINIO_BUCKET_CERTIFICATES=certificates
+      # AI Proxy Configuration
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+    volumes:
+      - uploads_data:/app/uploads
+    depends_on:
+      mysql:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - condotrack-network
+    restart: unless-stopped
+
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    container_name: condotrack-phpmyadmin
+    environment:
+      PMA_HOST: mysql
+      PMA_USER: condotrack_user
+      PMA_PASSWORD: Condo@2024Docker
+    ports:
+      - "8888:80"
+    depends_on:
+      - mysql
+    networks:
+      - condotrack-network
+
+  frontend:
+    build: ./frontend
+    container_name: condotrack-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+    networks:
+      - condotrack-network
+    restart: unless-stopped
+
+  portal:
+    build: ./portal
+    container_name: condotrack-portal
+    ports:
+      - "3001:80"
+    depends_on:
+      - api
+    networks:
+      - condotrack-network
+    restart: unless-stopped
+
+networks:
+  condotrack-network:
+    driver: bridge
+
+volumes:
+  mysql_data:
+  uploads_data:
+  minio_data:
