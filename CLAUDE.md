@@ -33,10 +33,10 @@ go build ./...
 # Health check
 curl http://localhost:8000/api/v1/health
 
-# Testar autenticação
+# Testar autenticação (credenciais padrão)
 curl -X POST http://localhost:8000/api/v1/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"user@example.com","password":"senha123"}'
+  -d '{"email":"admin@condotrack.com","password":"admin123"}'
 ```
 
 ### Banco de Dados
