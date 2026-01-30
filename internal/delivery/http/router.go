@@ -426,6 +426,15 @@ func (r *Router) handleLegacyAPIRouter(c *gin.Context) {
 	endpoint := c.Query("endpoint")
 
 	switch endpoint {
+	case "login":
+		r.authHandler.Login(c)
+	case "register":
+		r.authHandler.Register(c)
+	case "me", "current_user":
+		// Check if token is provided
+		r.authHandler.GetCurrentUser(c)
+	case "logout":
+		r.authHandler.Logout(c)
 	case "images":
 		if c.Request.Method == "GET" {
 			r.portalHandler.ListPortalImages(c)
@@ -459,10 +468,54 @@ func (r *Router) handleLegacyAPIRouter(c *gin.Context) {
 		} else if c.Request.Method == "POST" {
 			r.matriculaHandler.CreateEnrollment(c)
 		}
+	case "courses":
+		if c.Request.Method == "GET" {
+			r.courseHandler.ListCourses(c)
+		} else if c.Request.Method == "POST" {
+			r.courseHandler.CreateCourse(c)
+		}
+	case "tasks":
+		if c.Request.Method == "GET" {
+			r.taskHandler.ListTasks(c)
+		} else if c.Request.Method == "POST" {
+			r.taskHandler.CreateTask(c)
+		}
+	case "suppliers":
+		if c.Request.Method == "GET" {
+			r.supplierHandler.ListSuppliers(c)
+		} else if c.Request.Method == "POST" {
+			r.supplierHandler.CreateSupplier(c)
+		}
+	case "team":
+		if c.Request.Method == "GET" {
+			r.teamHandler.ListTeamMembers(c)
+		} else if c.Request.Method == "POST" {
+			r.teamHandler.CreateTeamMember(c)
+		}
+	case "agenda":
+		if c.Request.Method == "GET" {
+			r.agendaHandler.ListEvents(c)
+		} else if c.Request.Method == "POST" {
+			r.agendaHandler.CreateEvent(c)
+		}
+	case "inspections":
+		if c.Request.Method == "GET" {
+			r.inspectionHandler.ListInspections(c)
+		} else if c.Request.Method == "POST" {
+			r.inspectionHandler.CreateInspection(c)
+		}
+	case "stats":
+		r.statsHandler.GetOverview(c)
+	case "notifications":
+		if c.Request.Method == "GET" {
+			r.notificationHandler.ListNotifications(c)
+		} else if c.Request.Method == "POST" {
+			r.notificationHandler.CreateNotification(c)
+		}
 	default:
 		c.JSON(200, gin.H{
 			"status":  "CondoTrack API Online (Go)",
-			"actions": []string{"images", "upload", "health", "gestores", "contratos", "audits", "enrollments"},
+			"actions": []string{"login", "register", "me", "images", "upload", "health", "gestores", "contratos", "audits", "enrollments", "courses", "tasks", "suppliers", "team", "agenda", "inspections", "stats", "notifications"},
 		})
 	}
 }
