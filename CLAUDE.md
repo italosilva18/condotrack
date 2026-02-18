@@ -1,305 +1,117 @@
-# CLAUDE.md - CondoTrack API
+# CLAUDE.md
 
-Este arquivo fornece contexto para futuras instâncias do Claude Code operando neste repositório.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Visão Geral do Projeto
+## Build and Run
 
-CondoTrack API é uma aplicação backend em Go para gestão de condomínios, cursos e auditorias. Implementa Clean Architecture com Gin framework, SQLX para MySQL, e integração com gateway de pagamentos Asaas.
-
-## Comandos Essenciais
-
-### Build e Execução
 ```bash
-# Build local
-cd condotrack-api
-go mod tidy
-go build ./cmd/server
+# Verify compilation (fast check)
+go build ./...
 
-# Executar servidor (porta 8000)
+# Run locally (requires MySQL + MinIO running)
 go run ./cmd/server/main.go
 
-# Docker Compose (inclui MySQL, API, MinIO, phpMyAdmin)
-docker-compose up --build
-
-# Apenas rebuild da API
-docker-compose up --build api
-```
-
-### Testes e Validação
-```bash
-# Verificar compilação
-go build ./...
+# Docker (from parent directory)
+docker compose up --build api -d
 
 # Health check
 curl http://localhost:8000/api/v1/health
-
-# Testar autenticação (credenciais padrão)
-curl -X POST http://localhost:8000/api/v1/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"admin@condotrack.com","password":"admin123"}'
 ```
 
-### Banco de Dados
-```bash
-# Executar migrations via Docker
-docker exec -i condotrack-mysql mysql -ucondotrack_user -pCondo@2024Docker condotrack < migrations/001_initial_schema.sql
-docker exec -i condotrack-mysql mysql -ucondotrack_user -pCondo@2024Docker condotrack < migrations/002_additional_tables.sql
+## Architecture
 
-# Acesso direto ao MySQL
-docker exec -it condotrack-mysql mysql -ucondotrack_user -pCondo@2024Docker condotrack
-```
-
-## Arquitetura do Projeto
+Go 1.22 + Gin + SQLX + MySQL. Clean Architecture:
 
 ```
-condotrack-api/
-├── cmd/server/main.go           # Entry point da aplicação
-├── internal/
-│   ├── config/                  # Configuração via env vars
-│   ├── domain/
-│   │   ├── entity/              # Entidades do domínio (structs)
-│   │   └── repository/          # Interfaces dos repositórios
-│   ├── infrastructure/
-│   │   ├── auth/                # JWT e hash de senhas
-│   │   ├── database/            # Conexão MySQL/SQLX
-│   │   ├── external/asaas/      # Cliente API Asaas
-│   │   └── repository/          # Implementações MySQL
-│   ├── usecase/                 # Lógica de negócio
-│   └── delivery/http/
-│       ├── handler/             # Handlers HTTP (controllers)
-│       ├── middleware/          # CORS, Auth, Logger
-│       └── router.go            # Configuração de rotas
-├── migrations/                  # Scripts SQL
-└── docker-compose.yml           # Orquestração containers
+cmd/server/main.go         → entry point
+internal/config/            → env vars → Config struct
+internal/domain/entity/     → domain structs (db: + json: tags)
+internal/domain/repository/ → repository interfaces
+internal/domain/gateway/    → PaymentGateway interface + canonical types
+internal/infrastructure/    → implementations (MySQL repos, JWT, Asaas, MercadoPago, MinIO)
+internal/usecase/           → business logic (one package per module)
+internal/delivery/http/     → handlers, middleware, router.go
+pkg/response/               → standard JSON response helpers
 ```
 
-## Padrões Importantes
+**router.go is the central file.** `NewRouter()` wires all dependencies. `Setup()` registers all routes with middleware. Start here for any feature work.
 
-### Estrutura de Entidades
+## Key Patterns
+
+### Adding a Module
+entity → repository interface → MySQL implementation → use case → handler → wire in router.go
+
+### Error Handling
+```go
+// Internal errors: logs real error, returns generic message to client
+response.SafeInternalError(c, "Failed to create X", err)
+
+// Known errors: safe static message
+response.BadRequest(c, "Invalid email format")
+response.NotFound(c, "User not found")
+```
+Never concatenate `err.Error()` into client-facing responses.
+
+### Entity Struct Tags
 ```go
 type Entity struct {
-    ID        string     `db:"id" json:"id"`
+    ID        string     `db:"id" json:"id"`              // db: must match column exactly
     Name      string     `db:"name" json:"name"`
+    Phone     *string    `db:"phone" json:"phone,omitempty"` // pointer = nullable
     CreatedAt time.Time  `db:"created_at" json:"created_at"`
-    UpdatedAt *time.Time `db:"updated_at" json:"updated_at,omitempty"`
 }
 ```
-- Tags `db:` devem corresponder EXATAMENTE às colunas do banco
-- Use ponteiros para campos nullable (`*string`, `*time.Time`)
-- JSON tags podem ter nomes diferentes das colunas DB
 
-### Estrutura de Handlers
+### Handler Structure
 ```go
-func (h *Handler) Action(c *gin.Context) {
-    // 1. Parse request
-    var req RequestStruct
+func (h *Handler) Create(c *gin.Context) {
+    var req entity.CreateRequest
     if err := c.ShouldBindJSON(&req); err != nil {
-        c.JSON(400, gin.H{"success": false, "error": err.Error()})
+        response.BadRequest(c, "Invalid request: "+err.Error())
         return
     }
-
-    // 2. Call usecase
-    result, err := h.usecase.Method(c.Request.Context(), req)
+    result, err := h.usecase.Create(c.Request.Context(), req)
     if err != nil {
-        c.JSON(500, gin.H{"success": false, "error": err.Error()})
+        response.SafeInternalError(c, "Failed to create", err)
         return
     }
-
-    // 3. Return response
-    c.JSON(200, gin.H{"success": true, "data": result})
+    response.Created(c, result)
 }
 ```
 
-### Convenção de Respostas
-Todas as APIs retornam JSON com estrutura:
-```json
-{"success": true, "data": {...}}
-{"success": false, "error": "mensagem"}
+### Import Aliases
+```go
+authUseCase "github.com/condotrack/api/internal/usecase/auth"
+infraRepo "github.com/condotrack/api/internal/infrastructure/repository"
+infraAuth "github.com/condotrack/api/internal/infrastructure/auth"
 ```
 
-## Módulos Implementados
+## Security
 
-| Módulo | Arquivos | Endpoints |
-|--------|----------|-----------|
-| Auth | `usecase/auth/`, `handler/auth_handler.go` | `/auth/*` |
-| Users | `entity/user.go`, `repository/user_mysql.go` | `/users/*` |
-| Gestores | `usecase/gestor/`, `handler/gestor_handler.go` | `/gestores` |
-| Contratos | `usecase/contrato/`, `handler/contrato_handler.go` | `/contratos/*` |
-| Audits | `usecase/audit/`, `handler/audit_handler.go` | `/audits/*` |
-| Matrículas | `usecase/matricula/`, `handler/matricula_handler.go` | `/enrollments/*` |
-| Courses | `usecase/courses/`, `handler/course_handler.go` | `/courses/*` |
-| Tasks | `usecase/tasks/`, `handler/task_handler.go` | `/tasks/*` |
-| Suppliers | `usecase/suppliers/`, `handler/supplier_handler.go` | `/suppliers/*` |
-| Team | `usecase/team/`, `handler/team_handler.go` | `/team/*` |
-| Agenda | `usecase/agenda/`, `handler/agenda_handler.go` | `/agenda/*` |
-| Inspections | `usecase/inspection/`, `handler/inspection_handler.go` | `/inspections/*` |
-| Payments | `usecase/payment/`, `handler/payment_handler.go` | `/payments/*` |
-| Checkout | `usecase/checkout/`, `handler/checkout_handler.go` | `/checkout/*` |
-| Settings | `usecase/setting/`, `handler/setting_handler.go` | `/settings/*` |
+- **Auth**: `middleware.AuthMiddleware(jwtManager)` on all data routes (17 groups)
+- **Optional**: `middleware.OptionalAuth(jwtManager)` for legacy/public-mixed routes
+- **Roles**: `middleware.RequireRole("admin")` for role gating
+- **Token blacklist**: Logout blacklists JWT in-memory; `jwtManager.IsBlacklisted(token)`
+- **Rate limits**: Login 10/min, Register 5/min, AI 20/min, Global 100/min per IP
+- **Body size**: Global `MaxBodySize` + webhook `io.LimitReader(1MB)`
+- **Registration**: Always forces `entity.RoleStudent` regardless of request payload
+- **CORS**: Whitelist mode via `CORS_ALLOWED_ORIGINS` env var
 
-## Autenticação JWT
+Public endpoints (no auth): health, login, register, webhooks, coupon validate, portal images GET, certificate validate.
 
-```bash
-# Registro
-POST /api/v1/auth/register
-{"email": "...", "password": "...", "nome": "..."}
+## Payment Gateway
 
-# Login (retorna token)
-POST /api/v1/auth/login
-{"email": "...", "password": "..."}
+Factory pattern in `infrastructure/external/`. Asaas and MercadoPago both implement `gateway.PaymentGateway` interface. Webhooks parse to canonical `gateway.WebhookEvent` type. Event types: `EventPaymentConfirmed`, `EventPaymentOverdue`, `EventPaymentRefunded`, `EventPaymentDeleted`, `EventPaymentChargeback`.
 
-# Usar token em rotas protegidas
-Authorization: Bearer <token>
-```
+Revenue splits are created inside DB transactions on payment confirmation. Financial calculations use `roundCents()` (math.Round to 2 decimals).
 
-Middleware de autenticação: `internal/delivery/http/middleware/auth.go`
+## DB Roles
 
-## Variáveis de Ambiente
-
-```env
-# Server
-SERVER_PORT=8000
-APP_ENV=development
-
-# Database
-DB_HOST=localhost
-DB_PORT=3306
-DB_NAME=condotrack
-DB_USER=condotrack_user
-DB_PASS=Condo@2024Docker
-
-# JWT
-JWT_SECRET=your-secret-key
-JWT_EXPIRATION=24h
-
-# Asaas
-ASAAS_API_KEY=your-api-key
-ASAAS_API_URL=https://sandbox.asaas.com/api/v3
-
-# MinIO
-MINIO_ENDPOINT=localhost:9000
-MINIO_ACCESS_KEY=minioadmin
-MINIO_SECRET_KEY=minioadmin
-MINIO_BUCKET=condotrack
-```
-
-## Integração Asaas (Pagamentos)
-
-Cliente em `internal/infrastructure/external/asaas/`:
-- `client.go` - HTTP client base
-- `customer.go` - Criar/buscar clientes
-- `payment.go` - PIX, Boleto, Cartão
-- `types.go` - Structs de request/response
-
-Taxas configuradas:
-- PIX: 0.99%
-- Boleto: R$ 2.99
-- Cartão: 2.99% + R$ 0.49
-
-## Tabelas do Banco de Dados
-
-### Principais
-- `users` - Usuários do sistema
-- `gestores` - Gestores de condomínios
-- `contratos` - Contratos de gestão
-- `audits` / `audit_items` - Auditorias
-- `enrollments` / `enrollment_payments` - Matrículas
-- `courses` / `course_modules` / `course_lessons` - Cursos
-
-### Adicionais
-- `agenda` - Eventos do calendário
-- `tasks` - Tarefas
-- `suppliers` - Fornecedores
-- `team_members` - Membros da equipe
-- `inspections` - Vistorias
-- `routine_plans` / `routine_items` - Planos de rotina
-
-## Dicas de Produtividade
-
-1. **Adicionar novo módulo**: Criar na ordem entity → repository interface → repository impl → usecase → handler → router
-
-2. **Conflitos de import**: Quando dois packages têm o mesmo nome, use alias:
-   ```go
-   authUseCase "github.com/condotrack/api/internal/usecase/auth"
-   ```
-
-3. **Mismatch DB/Entity**: Tags `db:` DEVEM corresponder às colunas. Se erro "no rows", verifique nomes das colunas.
-
-4. **Router**: Todas as rotas definidas em `internal/delivery/http/router.go`
-
-5. **Testes locais**: Use `go build ./...` para verificar compilação antes de commitar
-
-## Docker Services
-
-| Service | Porta | Descrição |
-|---------|-------|-----------|
-| api | 8000 | API Go |
-| mysql | 3306 | MySQL 8.0 |
-| phpmyadmin | 8080 | Interface DB |
-| minio | 9000/9001 | Object storage |
-| frontend | 3000 | React app |
-| portal | 3001 | Portal alunos |
+MySQL ENUM: `admin, gestor, supervisor, zelador, manutencao, asg, student, instructor`. Go constants: `RoleAdmin`, `RoleManager`, `RoleInstructor`, `RoleStudent`, `RoleUser`. Not all Go constants exist in the DB ENUM - verify before using.
 
 ## Troubleshooting
 
-### Erro: "no rows in result set"
-- Verificar se dados existem no banco
-- Verificar tags `db:` correspondem às colunas
-
-### Erro: package redeclared
-- Usar alias para imports com mesmo nome
-
-### API não responde
-```bash
-docker-compose logs api
-docker-compose restart api
-```
-
-### MySQL não conecta
-```bash
-docker-compose logs mysql
-# Verificar health do container
-docker-compose ps
-```
-
-## Sistema de Configurações
-
-### Página de Configurações (Admin)
-Acesse: `http://localhost:3000/settings`
-
-A página de configurações permite gerenciar:
-- **Geral**: Nome do sistema, email, tamanho de upload
-- **Pagamentos (Asaas)**: API Key, URL, ambiente, webhook token
-- **IA (Gemini)**: API Key, habilitar/desabilitar
-- **Divisão de Receita**: Percentuais instrutor/plataforma
-- **Armazenamento (MinIO)**: Endpoint, access key, secret key
-- **Email (SMTP)**: Servidor, porta, credenciais
-
-### API de Configurações
-```bash
-# Listar todas as configurações (requer token admin)
-GET /api/v1/settings
-
-# Atualizar configuração individual
-PUT /api/v1/settings/:key
-{"value": "novo-valor"}
-
-# Atualizar múltiplas configurações
-PUT /api/v1/settings
-{"settings": {"key1": "value1", "key2": "value2"}}
-```
-
-### Tabela de Configurações (settings)
-| Coluna | Tipo | Descrição |
-|--------|------|-----------|
-| setting_key | VARCHAR(100) | Chave única da configuração |
-| setting_value | TEXT | Valor da configuração |
-| setting_type | VARCHAR(20) | Tipo: string, number, boolean, secret |
-| category | VARCHAR(50) | Categoria: general, payment, ai, revenue, storage, email |
-| is_secret | BOOLEAN | Se é um valor sensível (mascarado na UI) |
-| is_required | BOOLEAN | Se é obrigatório |
-
-### Notas de Segurança
-- Apenas usuários com role "admin" podem acessar as configurações
-- Valores secretos (API keys, senhas) são mascarados na resposta da API
-- Campos secretos vazios mantêm o valor anterior ao salvar
+- **"no rows in result set"**: Check `db:` tags match column names exactly
+- **"package redeclared"**: Use import aliases (see above)
+- **API won't start**: `docker compose logs api` - usually DB connection or missing env var
+- **Compilation errors after changes**: Run `go build ./...` before Docker rebuild
