@@ -18,6 +18,10 @@ COPY . .
 # Build the binary
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o server ./cmd/server
 
+# Test stage - runs all unit tests with verbose output
+FROM builder AS tester
+CMD ["go", "test", "-v", "-count=1", "-cover", "./..."]
+
 # Final stage
 FROM alpine:3.19
 
